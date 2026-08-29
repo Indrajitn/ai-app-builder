@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { DM_Sans, Lora } from "next/font/google";
 import "./globals.css";
+import { dark } from "@clerk/themes";
 import { ThemeProvider } from "@/components/theme-provider";
 import Header from "@/components/Header";
 import { ClerkProvider } from "@clerk/nextjs";
@@ -26,9 +27,15 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>){
   return (
-    <ClerkProvider>
+    <ClerkProvider appearance={{
+        theme: dark,
+      }}>
     <html
       lang="en" suppressHydrationWarning
     >
@@ -46,6 +53,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </ThemeProvider>
         </body>
     </html>
-      </ClerkProvider>
+    </ClerkProvider>
   );
 }
