@@ -5,6 +5,7 @@ import { dark } from "@clerk/themes";
 import { ThemeProvider } from "@/components/theme-provider";
 import Header from "@/components/Header";
 import { ClerkProvider } from "@clerk/nextjs";
+import { Toaster } from "@/components/ui/sonner";
 
 const lora = Lora({
   subsets: ["latin"],
@@ -50,6 +51,7 @@ export default function RootLayout({
             <main>
               {children}
             </main>
+            <Toaster richColors/>
           </ThemeProvider>
         </body>
     </html>
