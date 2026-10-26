@@ -132,7 +132,6 @@ function parseFileData(raw: unknown): FileData | null {
           signal: abortController.signal,
           body: JSON.stringify({
             workspaceId: currentWorkspaceId,
-            userId,
             messages: conversationHistory,
             fileData: fileDataRef.current,
           }),

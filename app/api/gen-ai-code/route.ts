@@ -116,9 +116,8 @@ export async function POST(request: NextRequest) {
     }
     const body = await request.json();
 
-    const { workspaceId, userId, messages, fileData } = body as {
+    const { workspaceId, messages, fileData } = body as {
       workspaceId: string | null;
-      userId: string;
       messages: Message[];
       fileData: FileData | null;
     };
@@ -163,6 +162,7 @@ export async function POST(request: NextRequest) {
       return Response.json({ message: "Insufficient credits" }, { status: 402 });
     }
 
+    const userId = user.id;
     const encoder = new TextEncoder();
 
     const stream = new ReadableStream({
