@@ -41,7 +41,13 @@ export async function POST(request: NextRequest) {
   if (user.plan !== "pro")
     return Response.json({ message: "Upgrade required" }, { status: 403 });
 
-  if (user.credits < CREDIT_COST_PER_GENERATION)
+  // Reserve the credit atomically up front so concurrent requests can't
+  // overspend. It's refunded below if the agent run doesn't complete.
+  const reserved = await db.user.updateMany({
+    where: { id: user.id, credits: { gte: CREDIT_COST_PER_GENERATION } },
+    data: { credits: { decrement: CREDIT_COST_PER_GENERATION } },
+  });
+  if (reserved.count === 0)
     return Response.json({ message: "Insufficient credits" }, { status: 402 });
 
   // ── Build the agent ────────────────────────────────────────────────────────
@@ -50,8 +56,13 @@ export async function POST(request: NextRequest) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      const enqueue = (chunk: string) =>
-        controller.enqueue(encoder.encode(chunk));
+      // The client may disconnect mid-stream; don't let that throw
+      const enqueue = (chunk: string) => {
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {}
+      };
+      let succeeded = false;
 
       // Accumulate file patches as the agent calls update_file
       const patchedFiles: Record<string, { code: string }> = {
@@ -187,7 +198,7 @@ RULES:
           throw new Error(result.error?.message ?? "Agent run failed");
         }
 
-        // ── Deduct credit + save to DB ────────────────────────────────────
+        // ── Save to DB (credit was already reserved) ──────────────────────
 
         const newFileData: FileData = {
           files: patchedFiles,
@@ -195,19 +206,15 @@ RULES:
           title: fileData.title,
         };
 
-        
-          await db.workspace.update({
-            where: { id: workspaceId, userId },
-            data: { fileData: newFileData as never },
-          });
-          await db.user.update({
-            where: { id: userId },
-            data: { credits: { decrement: CREDIT_COST_PER_GENERATION } },
-          });
-        
+        await db.workspace.update({
+          where: { id: workspaceId, userId: user.id },
+          data: { fileData: newFileData as never },
+        });
+
+        succeeded = true;
 
         const updatedUser = await db.user.findUnique({
-          where: { id: userId },
+          where: { id: user.id },
           select: { credits: true },
         });
 
@@ -217,8 +224,7 @@ RULES:
           sseEvent("done", {
             fileData: newFileData,
             summary: finalSummary || result.outputText,
-            creditsRemaining:
-              updatedUser?.credits ?? user.credits - CREDIT_COST_PER_GENERATION,
+            creditsRemaining: updatedUser?.credits ?? 0,
           })
         );
       } catch (err) {
@@ -230,7 +236,17 @@ RULES:
           })
         );
       } finally {
-        controller.close();
+        if (!succeeded) {
+          await db.user
+            .update({
+              where: { id: user.id },
+              data: { credits: { increment: CREDIT_COST_PER_GENERATION } },
+            })
+            .catch((e) => console.error("[improve] refund failed:", e));
+        }
+        try {
+          controller.close();
+        } catch {}
       }
     },
   });

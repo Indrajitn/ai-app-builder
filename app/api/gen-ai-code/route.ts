@@ -158,7 +158,14 @@ export async function POST(request: NextRequest) {
 
     if (!user)
       return Response.json({ message: "User not found" }, { status: 404 });
-    if (user.credits < CREDIT_COST_PER_GENERATION) {
+
+    // Reserve the credit atomically up front so concurrent requests can't
+    // overspend. It's refunded below if generation doesn't complete.
+    const reserved = await db.user.updateMany({
+      where: { id: user.id, credits: { gte: CREDIT_COST_PER_GENERATION } },
+      data: { credits: { decrement: CREDIT_COST_PER_GENERATION } },
+    });
+    if (reserved.count === 0) {
       return Response.json({ message: "Insufficient credits" }, { status: 402 });
     }
 
@@ -167,7 +174,13 @@ export async function POST(request: NextRequest) {
 
     const stream = new ReadableStream({
         async start(controller) {
-            const enqueue = (chunk: string) => controller.enqueue(encoder.encode(chunk));
+            // The client may disconnect mid-stream; don't let that throw
+            const enqueue = (chunk: string) => {
+              try {
+                controller.enqueue(encoder.encode(chunk));
+              } catch {}
+            };
+            let succeeded = false;
             try{
                 const contents = buildContents(messages, fileData);
 
@@ -227,7 +240,6 @@ export async function POST(request: NextRequest) {
               message: "AI returned invalid JSON. Please try again.",
             })
           );
-          controller.close();
           return;
         }
 
@@ -244,7 +256,6 @@ export async function POST(request: NextRequest) {
               message: "AI response missing files. Please try again.",
             })
           );
-          controller.close();
           return;
         }
 
@@ -258,7 +269,7 @@ export async function POST(request: NextRequest) {
           title: aiTitle,
         };
 
-        // ── Upsert workspace + deduct credit (single transaction) ──────────────
+        // ── Upsert workspace (credit was already reserved) ─────────────────────
 
         enqueue(sseEvent("status", { message: "Saving…" }));
 
@@ -285,10 +296,7 @@ export async function POST(request: NextRequest) {
                 },
               });
 
-          await db.user.update({
-            where: { id: userId },
-            data: { credits: { decrement: CREDIT_COST_PER_GENERATION } },
-          })
+        succeeded = true;
 
         const updatedUser = await db.user.findUnique({
           where: { id: userId },
@@ -302,8 +310,7 @@ export async function POST(request: NextRequest) {
             workspaceId: workspace.id,
             assistantMessage,
             fileData: newFileData,
-            creditsRemaining:
-              updatedUser?.credits ?? user.credits - CREDIT_COST_PER_GENERATION,
+            creditsRemaining: updatedUser?.credits ?? 0,
           })
         );
             }catch (error) {
@@ -314,7 +321,17 @@ export async function POST(request: NextRequest) {
                   })
                 );
             }finally {
-                controller.close();
+                if (!succeeded) {
+                  await db.user
+                    .update({
+                      where: { id: userId },
+                      data: { credits: { increment: CREDIT_COST_PER_GENERATION } },
+                    })
+                    .catch((e) => console.error("[gen-ai-code] refund failed:", e));
+                }
+                try {
+                  controller.close();
+                } catch {}
             }
         }
     });
